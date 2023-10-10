@@ -4458,44 +4458,6 @@ static __global__ void rope_neox(const T * x, T * dst, const int ncols, const in
     dst[i + ncols/2] = x0*sin_theta + x1*cos_theta;
 }
 
-static __global__ void rope_glm_f32(const float * x, float * dst, const int ncols, const int32_t * pos, const float freq_scale,
-                                    const int p_delta_rows, const float theta_scale, const int n_ctx) {
-    const int col = blockDim.x*blockIdx.x + threadIdx.x;
-    const int half_n_dims = ncols/4;
-
-    if (col >= half_n_dims) {
-        return;
-    }
-
-    const int row = blockDim.y*blockIdx.y + threadIdx.y;
-    const int i = row*ncols + col;
-    const int i2 = row/p_delta_rows;
-
-    const float col_theta_scale = powf(theta_scale, col);
-     // FIXME: this is likely wrong
-    const int p = pos != nullptr ? pos[i2] : 0;
-
-    const float theta = min(p, n_ctx - 2)*freq_scale*col_theta_scale;
-    const float sin_theta = sinf(theta);
-    const float cos_theta = cosf(theta);
-
-    const float x0 = x[i + 0];
-    const float x1 = x[i + half_n_dims];
-
-    dst[i + 0]           = x0*cos_theta - x1*sin_theta;
-    dst[i + half_n_dims] = x0*sin_theta + x1*cos_theta;
-
-    const float block_theta = ((float)max(p - n_ctx - 2, 0))*col_theta_scale;
-    const float sin_block_theta = sinf(block_theta);
-    const float cos_block_theta = cosf(block_theta);
-
-    const float x2 = x[i + half_n_dims * 2];
-    const float x3 = x[i + half_n_dims * 3];
-
-    dst[i + half_n_dims * 2] = x2*cos_block_theta - x3*sin_block_theta;
-    dst[i + half_n_dims * 3] = x2*sin_block_theta + x3*cos_block_theta;
-}
-
 static __global__ void alibi_f32(const float * x, float * dst, const int ncols, const int k_rows,
                                  const int n_heads_log2_floor, const float m0, const float m1) {
     const int col = blockDim.x*blockIdx.x + threadIdx.x;
@@ -5503,15 +5465,6 @@ static void rope_neox_cuda(const T * x, T * dst, const int ncols, const int nrow
     }
 }
 
-static void rope_glm_f32_cuda(const float * x, float * dst, const int ncols, const int nrows, const int32_t * pos, const float freq_scale,
-                              const int p_delta_rows, const float theta_scale, const int n_ctx, cudaStream_t stream) {
-    GGML_ASSERT(ncols % 4 == 0);
-    const dim3 block_dims(CUDA_ROPE_BLOCK_SIZE/4, 1, 1);
-    const int num_blocks_x = (ncols + CUDA_ROPE_BLOCK_SIZE - 1) / CUDA_ROPE_BLOCK_SIZE;
-    const dim3 block_nums(num_blocks_x, nrows, 1);
-    rope_glm_f32<<<block_nums, block_dims, 0, stream>>>(x, dst, ncols, pos, freq_scale, p_delta_rows, theta_scale, n_ctx);
-}
-
 static void alibi_f32_cuda(const float * x, float * dst, const int ncols, const int nrows,
                            const int k_rows, const int n_heads_log2_floor, const float m0,
                            const float m1, cudaStream_t stream) {
@@ -6377,13 +6330,9 @@ inline void ggml_cuda_op_rope(
     }
 
     const bool is_neox = mode & 2;
-    const bool is_glm  = mode & 4;
 
     // compute
-    if (is_glm) {
-        GGML_ASSERT(false);
-        rope_glm_f32_cuda(src0_dd, dst_dd, ne00, nrows, pos, freq_scale, ne01, theta_scale, n_ctx, main_stream);
-    } else if (is_neox) {
+    if (is_neox) {
         GGML_ASSERT(ne00 == n_dims && "ne00 != n_dims is not implemented for CUDA yet");
         if (src0->type == GGML_TYPE_F32) {
             rope_neox_cuda((const float *)src0_dd, (float *)dst_dd, ne00, nrows, pos, freq_scale, ne01, theta_scale, main_stream);
